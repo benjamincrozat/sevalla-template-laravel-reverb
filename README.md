@@ -1,4 +1,4 @@
-# Deploying Laravel w/ scheduler + queues on Sevalla
+# Deploy Laravel with Reverb on Sevalla
 
 Sevalla works with Docker. Therefore, this repository includes a [Dockerfile](/Dockerfile) that packages a Laravel application and runs it.
 
