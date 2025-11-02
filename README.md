@@ -2,6 +2,8 @@
 
 Sevalla works with Docker. Therefore, this repository includes a [Dockerfile](/Dockerfile) that packages a Laravel application and runs it.
 
+If you want to build your container using Nixpacks instead, [check out our instructions](/tree/nixpacks) for it.
+
 ## Architecture
 
 On Sevalla, every app has a **default web process** that serves HTTP requests. In this example, the app is built from the repository’s `Dockerfile`, and the web process runs three services:
