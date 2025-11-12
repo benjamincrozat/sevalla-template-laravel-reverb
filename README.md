@@ -1,83 +1,121 @@
-# Deploy Laravel with Reverb on Sevalla
+# Deploy Laravel + Reverb on Sevalla with Nixpacks (single web process)
 
-Sevalla works with Docker. Therefore, this repository includes a [Dockerfile](/Dockerfile) that packages a Laravel application and runs it.
+This template uses Nixpacks with Nginx + PHP‑FPM. Sevalla exposes a single web process, so Reverb (WebSockets) runs on an internal port and is proxied through Nginx on the same external port.
 
-If you want to build your container using Nixpacks instead, [check out our instructions](/tree/nixpacks) for it.
+## What’s included
 
-## Architecture
+- `nixpacks.toml`
+  - Installs PHP 8.4, Composer, Node (providers `php`, `node`)
+  - Installs Composer deps (prod) and prepares Nginx logs
+  - Serves the app from `/app/public` with a single page fallback to `/index.php`
+- `nginx.template.conf`
+  - Nixpacks‑templated Nginx config that listens on `$PORT` and forwards PHP to PHP‑FPM on `127.0.0.1:9000`
 
-On Sevalla, every app has a **default web process** that serves HTTP requests. In this example, the app is built from the repository’s `Dockerfile`, and the web process runs three services:
+## 1) Create Sevalla resources
 
-- **PHP-FPM**: runs your PHP application.
-- **Nginx**: listens on `localhost:8080` and serves your Laravel app.
- - **Reverb**: WebSocket server on `localhost:8000`, proxied by Nginx under `/app`.
+1. Create a database (MySQL or Postgres).
+2. Create a Sevalla app and connect this repository.
 
-All services are managed by **supervisord**. The default start commands are in [entrypoint.sh](/entrypoint.sh).
+## 2) Configure build (Nixpacks)
 
-## Steps
+In your Sevalla app:
+- Ensure **Build environment** is set to **Nixpacks** (root path `.`).
+- Nixpacks will detect `nixpacks.toml` and use `nginx.template.conf`.
 
-### 1. Prepare your repository
+## 3) Enable Reverb over the single web port
 
-Copy this repository’s `Dockerfile` and `entrypoint.sh` files into the **root** of your Laravel project. Or just clone this repository if you are starting from scratch.
+We’ll proxy WebSocket traffic from Nginx to an internal Reverb server on `127.0.0.1:8081`:
 
-### 2. Create Sevalla resources
+Add this block inside the `server { ... }` of `nginx.template.conf` (above the `location ~ \.php$` block is fine):
 
-1. [Create a **database**](https://app.sevalla.com/databases).
+```nginx
+# Reverb WebSocket proxy (single web port)
+location ^~ /app {
+    proxy_pass http://127.0.0.1:8081;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 60m;
+    proxy_send_timeout 60m;
+}
+```
 
-2. [Create a **new application**](https://app.sevalla.com/apps/new) and connect your repository (don't deploy it yet).
+Note: `/app` is the default Pusher‑compatible path used by Reverb’s Echo client. If you change it, update both the Reverb server path and the client `wsPath`.
 
-### 3. Configure the Sevalla app
+## 4) Environment variables
 
-#### A. Create a process to run DB migrations
+Set these in Sevalla → App → Environment variables:
 
-1. Go to **App → Processes** and create a **Job** process.
-2. Set the start command to:
+- Core
+  - `APP_ENV=production`
+  - `APP_DEBUG=false`
+  - `APP_KEY` (generate with `php artisan key:generate --show`)
+  - `APP_URL=https://your-domain`
+  - `BROADCAST_CONNECTION=reverb`
+- Reverb app credentials (create with `php artisan reverb:install` if you don’t have them)
+  - `REVERB_APP_ID=...`
+  - `REVERB_APP_KEY=...`
+  - `REVERB_APP_SECRET=...`
+- Reverb client/broadcaster target (public endpoint)
+  - `REVERB_HOST=your-domain`          # no protocol
+  - `REVERB_PORT=443`
+  - `REVERB_SCHEME=https`
+- Reverb server (internal, proxied by Nginx)
+  - `REVERB_SERVER_HOST=127.0.0.1`
+  - `REVERB_SERVER_PORT=8081`
+  - `REVERB_SERVER_PATH=/app`
+- Vite/Echo (frontend)
+  - `VITE_REVERB_APP_KEY=${REVERB_APP_KEY}`
+  - `VITE_REVERB_HOST=your-domain`
+  - `VITE_REVERB_SCHEME=https`
 
-   ```bash
-   php artisan migrate --force
-   ```
+Optional:
+- If you want Nginx to always route 404s to Laravel (SPA style), set `IS_LARAVEL=1`.
+- Configure database variables from Sevalla’s “Connected services” if using a managed DB.
 
-<img width="440" src="https://github.com/user-attachments/assets/7af80896-c431-4cd4-b5f0-5034b2c65d23" />
+## 5) Single web process start command
 
-#### B. Allow internal connections between the app and database
+Sevalla can only expose one web process. Start PHP‑FPM, Reverb, and Nginx in a single command:
 
-1. Go to **App → Networking** and scroll to **Connected services**.
-2. Click **Add connection**, select the database you created, and enable **Add environment variables to the application** in the modal.
+- Option A — define in `nixpacks.toml`:
 
-#### C. Set environment variables
+```toml
+[start]
+cmd = "sh -lc \"php-fpm -F & php artisan reverb:start --host=${REVERB_SERVER_HOST:-127.0.0.1} --port=${REVERB_SERVER_PORT:-8081} --no-interaction & nginx -g 'daemon off;'\""
+```
 
-Set the following in **App → Environment variables**. Fill in any empty values for your setup.
+- Option B — set in Sevalla UI:
+  - App → Processes → Web → Start command:
 
-**Notes:**
-- Set `DB_CONNECTION` with the value matching the database you created in step **B**. E.g., `mysql` or `pgsql`.
-- `DB_URL` is automatically added if you completed step **B**.
-- **Set `APP_URL` and `ASSET_URL` to your Sevalla app URL (e.g., `https://your-app.sevalla.app` or your custom domain).**
-- Ensure `APP_KEY` is set (e.g., via `php artisan key:generate`).
-- In production, keep `APP_DEBUG` to `false`.
-- Set `BROADCAST_CONNECTION=reverb`.
-- Set `REVERB_APP_ID`, `REVERB_APP_KEY`, and `REVERB_APP_SECRET` (random values are fine).
-- Set `REVERB_HOST` to your app web process private hostname, `REVERB_PORT=8000`, and `REVERB_SCHEME=http`.
-- Set `VITE_REVERB_APP_KEY=${REVERB_APP_KEY}`, `VITE_REVERB_HOST` to your public host (no protocol), and `VITE_REVERB_SCHEME=https`.
-- If workers need to reach Reverb, expose private port `8000` in **App → Networking**.
+```bash
+sh -lc "php-fpm -F & php artisan reverb:start --host=${REVERB_SERVER_HOST:-127.0.0.1} --port=${REVERB_SERVER_PORT:-8081} --no-interaction & nginx -g 'daemon off;'"
+```
 
-#### D. Start the scheduler
+Nginx will listen on `$PORT` (provided by Sevalla), serve Laravel from `/app/public`, forward `.php` to PHP‑FPM on `127.0.0.1:9000`, and proxy WebSockets at `/app` to Reverb on `127.0.0.1:8081`.
 
-1. Go to **App → Processes → Create process → Background worker**.
-2. Set the custom start command to `php artisan schedule:work`.
+## 6) Migrations and optional workers
 
-<img width="440" height="1152" src="https://github.com/user-attachments/assets/78224eac-66d0-4a49-b128-4087a31b37b5" />
+- Release job (after each deploy): `php artisan migrate --force`
+- Optional workers (create separate background processes as needed):
+  - Scheduler: `php artisan schedule:work`
+  - Queue: `php artisan queue:work`
 
-#### E. Start your default queue
+## 7) Verify
 
-1. Go to **App → Processes → Create process → Background worker**.
-2. Set the custom start command to `php artisan queue:work`.
+- Load the app over HTTPS and confirm pages render.
+- Open the browser devtools Network tab and verify a `ws`/`wss` connection to `/app` upgrades (101 Switching Protocols).
+- Trigger a broadcast event and confirm it reaches connected clients.
 
-#### F. Switch to Dockerfile-based build
+## Custom PHP settings via `.user.ini`
 
-Go to **App → Settings → Build** and change **Build environment** to **Dockerfile**.
+Create a `.user.ini` in the project root to adjust PHP limits:
 
-<img width="373" src="https://github.com/user-attachments/assets/b074529e-3f51-471d-aa89-9a585dda2e5a" />
+```ini
+upload_max_filesize = 50M
+post_max_size = 50M
+```
 
-### 4. Deploy 🚀
-
-Trigger a new deployment from Sevalla. Once deployed, your Laravel app, Nginx, and Reverb will run inside the web process under supervisord.
+Commit and redeploy for changes to take effect.

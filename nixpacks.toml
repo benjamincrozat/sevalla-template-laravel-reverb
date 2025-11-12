@@ -1,0 +1,20 @@
+providers = ['php', 'node']
+
+[variables]
+NIXPACKS_PHP_ROOT_DIR = '/app/public'
+NIXPACKS_PHP_FALLBACK_PATH = '/index.php'
+
+[phases.setup]
+# System-level packages required for building and running the app.
+nixPkgs = ['php84', 'nginx', 'git', 'unzip', 'curl', 'xz']
+
+[phases.install]
+# Install PHP and JS dependencies (production only).
+cmds = [
+  'if [ ! -x /app/bin/composer ]; then mkdir -p /app/bin && curl -sS https://getcomposer.org/installer -o composer-setup.php && php composer-setup.php --install-dir=/app/bin --filename=composer && rm composer-setup.php; fi',
+  'php /app/bin/composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader',
+  'mkdir -p /var/log/nginx && ln -sf /dev/stderr /var/log/nginx/error.log'
+]
+
+[start]
+cmd = "sh -lc \"php-fpm -F & nginx -g 'daemon off;'\""
